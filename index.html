@@ -7590,22 +7590,26 @@ function processOnAttackAbility(attacker, targetsArg, move, mentLines, preview) 
   }
 }
 
-function processContactOnhitStatus(attacker, targetsArg, move, mentLines, preview) {
+function processContactOnhitStatus(attacker, targetsArg, move, mentLines, preview, hitIdx, mode) {
   if (!attacker) return;
   if (move.접촉 !== 'Y' || /\[Ab,LONGREACH\]/i.test(attacker.abilityDesc || '')) return;
+  mode = mode || 'all';   // 'all'(기존) | 'status'(상태이상만·타격별) | 'rank'(랭크만·1회)
+  const perHit = (hitIdx != null);   // 다중타격에서 타격별 호출 여부
   const targets = (Array.isArray(targetsArg) ? targetsArg : [targetsArg]).filter(d => !moldBreakerActive(attacker, move, d));   // 틀깨기: 방어측 접촉 특성 무시
   const gasNow = G.units.some(u => !u.fainted && /\[Ab,GASABSORB\]/i.test(u.abilityDesc || ''));
   const re = /\[Ab,ONHIT:(BURN|PARA|POISON|BADPOISON|SLEEP|FREEZE|CHARM|CONFUSE|화상|마비|독|맹독|잠듦|얼음|헤롱헤롱|혼란):([\d.]+)%\]/gi;
   const atkName = attacker.runnerName || attacker.displayName || attacker.pokeName || '??';
   if (!G._onhitRolls) G._onhitRolls = {};
-  let simStatus = attacker.status;   // 미리보기용 러닝 상태(적용은 attacker.status 실시간 반영)
+  // 미리보기 러닝 상태: 타격별 호출이면 G._simAtkStatus로 타격 간 유지, 아니면 지역 변수
+  let simStatus = perHit ? (G._simAtkStatus != null ? G._simAtkStatus : (attacker.status || null)) : attacker.status;
+  const _hitTag = perHit ? `${hitIdx}번째 타격 · ` : '';
   for (const defender of targets) {
     if (!defender) continue;   // 방어자가 이번 공격으로 쓰러져도 접촉은 이미 일어남 → ONHIT 발동 (미리보기와 일치)
     const dDesc = gasNow ? '' : (defender.abilityDesc || '');
-    const rollKey = defender.id + '_onhit';
+    const rollKey = defender.id + '_onhit' + (perHit ? '_h' + hitIdx : '');   // 타격별 독립 판정 키
     const saved = G._onhitRolls[rollKey] || (G._onhitRolls[rollKey] = {});
     let m, si = 0;
-    while ((m = re.exec(dDesc)) !== null) {
+    if (mode !== 'rank') while ((m = re.exec(dDesc)) !== null) {
       const statusKey = resolveStatusKey(m[1]);
       const chance = parseFloat(m[2]);
       const sKeyR = 's' + si; si++;
@@ -7615,7 +7619,7 @@ function processContactOnhitStatus(attacker, targetsArg, move, mentLines, previe
       // 검토란: 판정 기록 (성공/실패 모두)
       if (!G._applyOnhitInfo) G._applyOnhitInfo = [];
       {
-        const _l = `${defender.ability||'특성'}: ${_ONHIT_STATUS_MENT[statusKey] ? statusKeyToKr(statusKey) : statusKey} ${chance}% → 판정 ${roll} → ${roll <= chance ? '성공' : '실패'}`;
+        const _l = `${_hitTag}${defender.ability||'특성'}: ${_ONHIT_STATUS_MENT[statusKey] ? statusKeyToKr(statusKey) : statusKey} ${chance}% → 판정 ${roll} → ${roll <= chance ? '성공' : '실패'}`;
         if (!G._applyOnhitInfo.includes(_l)) G._applyOnhitInfo.push(_l);
       }
       if (roll > chance) continue;
@@ -7629,11 +7633,13 @@ function processContactOnhitStatus(attacker, targetsArg, move, mentLines, previe
         rebuildCard(attacker);
       } else if (!isSub) {
         simStatus = statusKey;   // 미리보기 러닝 상태 갱신
+        if (perHit) G._simAtkStatus = statusKey;   // 타격 간 유지 → 다음 타격 데미지에 반영
       }
-      const sline = `${atkName}${josa(atkName, '은', '는')} ${_ONHIT_STATUS_MENT[statusKey] || statusKey}에 걸렸다! (${defender.ability || '특성'})`;
+      const sline = `${atkName}${josa(atkName, '은', '는')} ${_ONHIT_STATUS_MENT[statusKey] || statusKey}에 걸렸다! (${_hitTag}${defender.ability || '특성'})`;
       if (!mentLines.includes(sline)) mentLines.push(sline);
     }
     re.lastIndex = 0;   // 다음 방어자를 위해 정규식 인덱스 초기화
+    if (mode === 'status') continue;   // 상태이상 전용 호출이면 랭크 변화는 건너뜀
 
     // [Ab,ONHIT:ESPD-1:100%] 등 접촉 피격 시 랭크 변화 (E접두사=공격자, 없으면 방어자 자신)
     const reRank = /\[Ab,ONHIT:(E?)(ATK|DEF|SPD|SPATK|SPDEF|ACC|EVA)([+-]\d+):([\d.]+)%\]/gi;
@@ -10877,8 +10883,10 @@ function rerollDamageWithMoveMulti(attacker, move, hitCount, prefix, isHalfDefQ,
   const hitDamages = [];
   const hitsByDef = {}; const critsByDef = {};   // 적용 시 재사용: defId → [타격별 최종 대미지]
   let lastR = null, lastDef = null;   // 검토란 표시용 (마지막 타격 결과)
+  G._simAtkStatus = attacker.status || null;   // 타격 도중 발동한 상태이상 러닝 추적(미리보기)
 
   for (let i = 1; i <= hitCount; i++) {
+    G.__burnRun = (G._simAtkStatus === 'burn');   // 이번 타격 시작 시점의 화상 여부를 데미지에 주입
     for (const def of targets) {
       const r = calculateDamage({
         attacker: { 힘: attacker.힘, 민첩: attacker.민첩, atkRank: attacker.atkRank,
@@ -10917,7 +10925,10 @@ function rerollDamageWithMoveMulti(attacker, move, hitCount, prefix, isHalfDefQ,
         }
       }
     }
+    // 이번 타격의 접촉 ONHIT 상태이상 판정(불꽃몸/정전기 등) — 타격별 독립, 화상이면 다음 타격부터 반감
+    processContactOnhitStatus(attacker, targets, move, mentLines, true, i, 'status');
   }
+  G.__burnRun = undefined;   // 러닝 화상 주입 해제
 
   mentLines.push(`${hitCount}회 맞았다!`);
   if (targets.length === 1) mentLines.push(`총 ${totalDamage} 대미지!`);
@@ -10994,7 +11005,7 @@ function rerollDamageWithMoveMulti(attacker, move, hitCount, prefix, isHalfDefQ,
   // 접촉 ONHIT 상태이상(정전기 등) + 변색 미리보기 (표시만, 판정 저장 → 적용과 일치)
   {
     const _mt = (lastR && lastR.effectiveMoveType) || move.타입;
-    processContactOnhitStatus(attacker, targets, move, mentLines, true);
+    processContactOnhitStatus(attacker, targets, move, mentLines, true, null, 'rank');   // 상태이상은 타격별로 이미 처리 → 랭크 변화만
     for (const def of targets) processColorChangeOnhit(attacker, def, move, _mt, mentLines, true);
   }
 
@@ -11084,8 +11095,10 @@ function rerollDamageWithMoveStep(attacker, move, stepTag, prefix) {
   let _simIdx = _sforms ? Math.max(0, Math.min(_sforms.length-1, defender.stanceIndex||0)) : 0;
   let _simHp = defender.currHp;
   let _simFired = defender._stanceAutoFired || false;
+  G._simAtkStatus = attacker.status || null;   // 타격 도중 발동한 상태이상 러닝 추적(미리보기)
 
   for (let k = 1; k <= maxHits; k++) {
+    G.__burnRun = (G._simAtkStatus === 'burn');   // 이번 타격 시작 시점 화상 여부를 데미지에 주입
     const hitPower = stepHits ? stepHits[k-1].power : basePower * k;
     const hitAcc   = stepHits ? (stepHits[k-1].acc != null ? stepHits[k-1].acc : (move.명중률||100)) : (move.명중률||100);
     if (accEnabled) {
@@ -11136,9 +11149,12 @@ function rerollDamageWithMoveStep(attacker, move, stepTag, prefix) {
         if (form.heal) { const amt = form.heal.pct ? Math.max(1, Math.floor(defender.maxHp*form.heal.val/100)) : Math.max(1, form.heal.val); _simHp = Math.min(defender.maxHp, _simHp + amt); mentLines.push(`${dName}의 HP가 ${amt} 회복됐다!`); }
       }
     }
+    // 이번 타격의 접촉 ONHIT 상태이상 판정(불꽃몸/정전기 등) — 타격별 독립, 화상이면 다음 타격부터 반감
+    processContactOnhitStatus(attacker, [defender], move, mentLines, true, k, 'status');
     // 쓰러지면 중단 (미리보기)
     if (_simHp <= 0) { mentLines.push(`${dName}${josa(dName,'은','는')} 쓰러졌다!`); processOnKoAbility(attacker, mentLines, true); break; }
   }
+  G.__burnRun = undefined;   // 러닝 화상 주입 해제
 
   mentLines.push(`${landed}회 명중! 총 ${total} 대미지`);
   // 풀죽음(FLINCH) 미리보기 — 타격마다 독립 판정, 판정 저장(적용과 일치). 비파괴(로컬 추적).
@@ -11159,7 +11175,7 @@ function rerollDamageWithMoveStep(attacker, move, stepTag, prefix) {
   // 접촉 ONHIT 상태이상 + 변색 미리보기 (표시만, 판정 저장 → 적용과 일치)
   {
     const _mt = (lastR && lastR.effectiveMoveType) || move.타입;
-    processContactOnhitStatus(attacker, targets, move, mentLines, true);
+    processContactOnhitStatus(attacker, targets, move, mentLines, true, null, 'rank');   // 상태이상은 타격별로 이미 처리 → 랭크 변화만
     for (const def of targets) processColorChangeOnhit(attacker, def, move, _mt, mentLines, true);
   }
   // (사망/폼 자동전환은 타격 루프 내에서 시뮬레이션 처리됨)
@@ -11326,6 +11342,8 @@ function executeMultiHit(attacker, move, targets, hitCount, mentPrefix, atkNameC
         processOnKoAbility(attacker, mentLines, false);   // 막타 시 자기 랭크 상승
       }
     }
+    // 이번 타격의 접촉 ONHIT 상태이상 적용(불꽃몸/정전기 등) — 타격별 독립(미리보기 판정 재사용), 화상이면 이후 타격 반감
+    processContactOnhitStatus(attacker, targets, move, mentLines, false, i, 'status');
     if (targets.every(t => t.fainted)) break;
   }
 
@@ -11365,7 +11383,7 @@ function executeMultiHit(attacker, move, targets, hitCount, mentPrefix, atkNameC
   // 연속기 종료 후: 접촉 ONHIT 상태이상(정전기 등) + 변색 (특성 교환보다 먼저 — 교환 전 특성 기준)
   {
     const _mt = _lastEffType || move.타입;
-    processContactOnhitStatus(attacker, targets, move, mentLines, false);
+    processContactOnhitStatus(attacker, targets, move, mentLines, false, null, 'rank');   // 상태이상은 타격별로 이미 처리 → 랭크 변화만
     processOnAttackAbility(attacker, targets, move, mentLines);
     for (const def of targets) processColorChangeOnhit(attacker, def, move, _mt, mentLines, false);
   }
@@ -11612,6 +11630,9 @@ function executeStepHit(attacker, move, targets, stepTag, mentPrefix, atkNameC, 
         processStruckAbility(defender, attacker, move, { 급소보정: (ti === 0 && forcedCrits && forcedCrits[k-1] != null) ? forcedCrits[k-1] : (result.급소보정 || 1) }, mentLines, false, k, defender.currHp);   // 피격 시 발동 특성 (타격마다, 저장된 급소·실제 HP)
       }
 
+      // 이번 타격의 접촉 ONHIT 상태이상 적용(불꽃몸/정전기 등) — 타격별 독립(미리보기 판정 재사용), 화상이면 이후 타격 반감
+      processContactOnhitStatus(attacker, [defender], move, mentLines, false, k, 'status');
+
       // 4) 쓰러지면 중단
       if (!subR.toSub && defender.currHp <= 0 && !defender.fainted) {
         defender.fainted = true; rebuildCard(defender);
@@ -11655,7 +11676,7 @@ function executeStepHit(attacker, move, targets, stepTag, mentPrefix, atkNameC, 
 
   // 단계 연속기 종료 후: 접촉 ONHIT 상태이상 + 변색 (특성 교환보다 먼저)
   {
-    processContactOnhitStatus(attacker, targets, move, mentLines, false);
+    processContactOnhitStatus(attacker, targets, move, mentLines, false, null, 'rank');   // 상태이상은 타격별로 이미 처리 → 랭크 변화만
     processOnAttackAbility(attacker, targets, move, mentLines);
     for (const def of targets) processColorChangeOnhit(attacker, def, move, _stepEffType, mentLines, false);
   }
@@ -13529,6 +13550,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (mode && params && params.options) {
         if (mode === 'force')      { params.options.급소 = true;  params.options.급소무효 = false; }
         else if (mode === 'none')  { params.options.급소 = false; params.options.급소무효 = true; }
+      }
+      // 다중타격 미리보기: 타격 도중 화상 발동 시 남은 타격에 running 화상 상태 주입
+      var _burn = (typeof G !== 'undefined' && G) ? G.__burnRun : undefined;
+      if (_burn !== undefined && _burn !== null && params && params.options) {
+        params.options.burnStatus = !!_burn;
       }
     } catch (e) {}
     return __ac_orig.apply(this, arguments);
