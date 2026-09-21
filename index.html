@@ -4950,6 +4950,7 @@ function executeAttack() {
   }
 }
 function _executeAttackImpl() {
+  G.__burnRun = undefined;   // 적용 시 잔류한 러닝 화상 플래그 정리(미리보기 중단 대비)
   pushHistory();
   const attacker = getUnit(currentUnitId());
   if (!attacker || attacker.fainted) { advanceTurn(); return; }
@@ -7614,6 +7615,9 @@ function processContactOnhitStatus(attacker, targetsArg, move, mentLines, previe
       const chance = parseFloat(m[2]);
       const sKeyR = 's' + si; si++;
       if (!statusKey) continue;
+      const isSub = ['charm', 'confuse'].includes(statusKey);
+      const curStatus = preview ? simStatus : attacker.status;
+      if (!isSub && curStatus) continue;   // 이미 주 상태이상이면 이 타격 판정/기록 생략(중복 표시 방지)
       let roll = saved[sKeyR];
       if (roll == null) { roll = Math.floor(Math.random() * 100) + 1; saved[sKeyR] = roll; }
       // 검토란: 판정 기록 (성공/실패 모두)
@@ -7623,9 +7627,11 @@ function processContactOnhitStatus(attacker, targetsArg, move, mentLines, previe
         if (!G._applyOnhitInfo.includes(_l)) G._applyOnhitInfo.push(_l);
       }
       if (roll > chance) continue;
-      const isSub = ['charm', 'confuse'].includes(statusKey);
-      const curStatus = preview ? simStatus : attacker.status;
-      if (!isSub && curStatus) continue;   // 이미 주 상태이상이면 불가
+      if (!isSub && statusImmune(attacker, statusKey)) {   // 면역 특성 → 미리보기=적용 일치(양쪽 다 미발동)
+        const _im = `${_hitTag}${atkName}: ${statusKeyToKr(statusKey)} 면역(${attacker.ability||'특성'})`;
+        if (!G._applyOnhitInfo.includes(_im)) G._applyOnhitInfo.push(_im);
+        continue;
+      }
       if (!preview) {
         const before = attacker.status;
         applyStatus(attacker, statusKey);
@@ -8047,6 +8053,7 @@ function rerollDamageWithMove(attacker, move) {
   }
 }
 function _rerollImpl(attacker, move) {
+  G.__burnRun = undefined;   // 이전 미리보기 중단(예외) 시 잔류한 러닝 화상 플래그 정리
   const prefix = G._손가락흔들기Prefix || null;
   G._손가락흔들기Prefix = null;
   G._pendingOwner = `${attacker?.id}::${move?.이름}::${[...(G.targetIds||[])].sort().join(',')}`;   // 출처 = 공격자+기술+대상 (하나라도 바뀌면 재계산)
