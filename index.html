@@ -2407,6 +2407,9 @@ function parseEffectTags(effectText) {
     // [MAGNETRISE] / [MAGNETRISE:n] / [FLOAT:n] — 전자부유: n턴(기본 5) 공중에 뜸 (부유 특성과 동효과, 특성 변경 아님)
     const magM = inner.match(/^(?:MAGNETRISE|FLOAT)(?::(\d+))?$/i);
     if (magM) { effects.push({ type: 'magnetrise', turns: magM[1] ? parseInt(magM[1]) : 5 }); continue; }
+    // [UNTARGET:self|target,turns=N] — 피격 불가: 대상은 N턴간 기술 대상이 되지 않지만, 그동안 자신의 공격은 대미지 반감
+    const untgtM = inner.match(/^UNTARGET:(self|target)(?:\s*,\s*turns\s*=\s*(\d+))?$/i);
+    if (untgtM) { effects.push({ type: 'untarget', who: untgtM[1].toLowerCase(), turns: untgtM[2] ? parseInt(untgtM[2]) : 5 }); continue; }
     // [CRASHHP:n] : 빗나갔을 때 자신 최대 HP의 1/n을 자해 (CRASH와 달리 대미지가 아니라 최대체력 기준)
     const crashHpM = inner.match(/^CRASHHP:(\d+)$/i);
     if (crashHpM) { effects.push({ type: 'crashhp', divisor: parseInt(crashHpM[1]) }); continue; }
@@ -3352,6 +3355,9 @@ function calculateDamage({ attacker, move, defender, options, config }) {
   // 화상: 모든 공격 기술 대미지 반감 (급소 시에도 동일). 근성(GUTS)은 물리감소 무시
   const 화상보정 = (options?.burnStatus && effectiveMove.접촉 !== '변화' && !_gutsActive) ? 0.5 : 1;
 
+  // 피격 불가(UNTARGET) 상태로 공격하면 자신의 대미지 반감 (변화기 제외)
+  const 피격불가보정 = (options?.untargetPenalty && effectiveMove.접촉 !== '변화') ? 0.5 : 1;
+
   let 난수 = 0;
   const diceMax = config?.diceType || 4;
   const diceMin = config?.diceMin  ?? 1;
@@ -3367,11 +3373,12 @@ function calculateDamage({ attacker, move, defender, options, config }) {
   // 새 공식: ((힘 × 위력) / 15 + 난수) × 랭크보정 × 각종 보정
   const baseDmg = (attacker.힘 || 0) * (effectiveMove.위력 || 0) / 15 + 난수;
 
-  const ALL_MODS = ['랭크보정','타입상성','자속보정','급소보정','날씨보정','필드보정','특성보정','기타보정1','기타보정2','기타보정3','벽보정','화상보정'];
+  const ALL_MODS = ['랭크보정','타입상성','자속보정','급소보정','날씨보정','필드보정','특성보정','기타보정1','기타보정2','기타보정3','벽보정','화상보정','피격불가보정'];
   const mods = config?.modifiers || {};
-  const modValues = { 랭크보정, 타입상성, 자속보정, 급소보정, 날씨보정, 필드보정, 특성보정, 기타보정1, 기타보정2, 기타보정3, 벽보정: 실제벽보정, 화상보정 };
+  const modValues = { 랭크보정, 타입상성, 자속보정, 급소보정, 날씨보정, 필드보정, 특성보정, 기타보정1, 기타보정2, 기타보정3, 벽보정: 실제벽보정, 화상보정, 피격불가보정 };
   const activeMods = ALL_MODS.filter(m => {
     if (m === '화상보정') return 화상보정 !== 1;
+    if (m === '피격불가보정') return 피격불가보정 !== 1;
     if (m === '랭크보정') return 랭크보정 !== 1;
     return mods[m] !== false;
   });
@@ -3384,7 +3391,7 @@ function calculateDamage({ attacker, move, defender, options, config }) {
   return {
     damage, isStatMove: false,
     effectivePower: effectiveMove.위력, effectiveType: effectiveMove.타입,
-    타입상성, 날씨보정, 필드보정, 급소보정, 화상보정,
+    타입상성, 날씨보정, 필드보정, 급소보정, 화상보정, 피격불가보정,
     isCrit, critLevel: totalCritLevel, critRate: getCritRate(totalCritLevel), critRoll,
     난수, 주사위: 난수,
     자속보정, isSTAB,
@@ -3647,7 +3654,7 @@ function takeSnapshot() {
       leeches: (u.leeches||[]).map(r => ({...r})),
       binds: (u.binds||[]).map(r => ({...r})), removedTypes: (u.removedTypes||[]).map(r => ({...r})),
       grounded: u.grounded||false,
-      subStatus: (u.subStatus||[]).map(s => typeof s === 'object' ? {...s} : s), locks: (u.locks||[]).map(l => ({...l})), magnetRise: u.magnetRise||0, _koCharge: u._koCharge ? {...u._koCharge} : null, _doomedBy: u._doomedBy||null,
+      subStatus: (u.subStatus||[]).map(s => typeof s === 'object' ? {...s} : s), locks: (u.locks||[]).map(l => ({...l})), magnetRise: u.magnetRise||0, untargetable: u.untargetable||0, _koCharge: u._koCharge ? {...u._koCharge} : null, _doomedBy: u._doomedBy||null,
       sub: u.sub ? {...u.sub} : null,
       moves: u.moves.map(m => ({ ...m }))
     })),
@@ -3676,7 +3683,7 @@ function restoreSnapshot(snap) {
     leeches: (u.leeches||[]).map(r => ({...r})),
     binds: (u.binds||[]).map(r => ({...r})), removedTypes: (u.removedTypes||[]).map(r => ({...r})),
     grounded: u.grounded||false,
-    subStatus: (u.subStatus||[]).map(s => typeof s === 'object' ? {...s} : s), locks: (u.locks||[]).map(l => ({...l})), magnetRise: u.magnetRise||0, _koCharge: u._koCharge ? {...u._koCharge} : null, _doomedBy: u._doomedBy||null,
+    subStatus: (u.subStatus||[]).map(s => typeof s === 'object' ? {...s} : s), locks: (u.locks||[]).map(l => ({...l})), magnetRise: u.magnetRise||0, untargetable: u.untargetable||0, _koCharge: u._koCharge ? {...u._koCharge} : null, _doomedBy: u._doomedBy||null,
     sub: u.sub ? {...u.sub} : null,
     moves: u.moves.map(m => ({ ...m }))
   }));
@@ -3910,6 +3917,7 @@ function createUnitFromName(side, name) {
     leeches: [],       // 씨뿌리기 (매턴 흡수당함)
     locks: [],         // 문구용 상태 (사슬묶기/앙코르/금제/도발/회복봉인/트집)
     magnetRise: 0,     // 전자부유 남은 턴
+    untargetable: 0,   // 피격 불가(UNTARGET) 남은 턴 — 대상 지정 불가 + 자신 공격 반감
     binds: [],         // 조이기류 (매턴 도트, P~Q턴)
     sub: null,         // 대타출동 분신 {hp,maxHp}
     subActive: false,  // 분신 모드 토글
@@ -4514,6 +4522,7 @@ function buildDamageFormula(attacker, result) {
   add(result.기타보정1, '기타'); add(result.기타보정2, '기타'); add(result.기타보정3, '기타');
   add(result.벽보정, '벽');
   add(result.화상보정, '화상');
+  add(result.피격불가보정, '피격불가');
   add(result.typemultBonus, '추가');
   add(result.resistMult, '경감');
   if (result.spreadMult && result.spreadMult !== 1) add(result.spreadMult, '광역');
@@ -4553,6 +4562,8 @@ function buildAppliedEffects(attacker, defender, result) {
   }
   // 화상 (공격자 화상 시 물리 대미지 ×0.5)
   if (result && result.화상보정 != null && result.화상보정 !== 1) lines.push(`화상 ×${fmt(result.화상보정)}`);
+  // 피격 불가 (공격자 피격불가 시 대미지 ×0.5)
+  if (result && result.피격불가보정 != null && result.피격불가보정 !== 1) lines.push(`피격불가 ×${fmt(result.피격불가보정)}`);
   // 수동 기타보정(1/2/3)도 1이 아니면 표시 — 검토란 누락 0 보장
   ['기타보정1','기타보정2','기타보정3'].forEach(k => {
     const v = result?.[k];
@@ -4666,6 +4677,7 @@ function advanceTurn() {
           parts.push((lk.turns != null && lk.turns > 0) ? `[${nm} : ${lk.turns}턴]` : `[${nm}]`);
         }
         if (u.magnetRise > 0) parts.push(`[전자부유 : ${u.magnetRise}턴]`);
+        if (u.untargetable > 0) parts.push(`[피격불가 : ${u.untargetable}턴]`);
         return parts.length ? ' ' + parts.join('') : '';
       }
 
@@ -4954,6 +4966,7 @@ function _executeAttackImpl() {
   pushHistory();
   const attacker = getUnit(currentUnitId());
   if (!attacker || attacker.fainted) { advanceTurn(); return; }
+  G.__untargetPenalty = !!(attacker.untargetable > 0);   // 피격 불가 상태로 공격 시 자신 대미지 반감
 
   let moveIdx = attacker.selectedMoveIdx;
   // 기술 미선택 시 첫 번째 기술 자동 선택
@@ -5284,6 +5297,14 @@ function _executeCore(attacker, move, mentPrefix) {
           log(`  🧲 ${atkNameC} 전자부유 ${magEffS.turns}턴`, 'effect');
         }
       }
+    }
+
+    // [UNTARGET:self|target] 피격 불가 (변화기 경로)
+    {
+      const _utTgtS = G.targetIds.length > 0
+        ? G.units.filter(u => G.targetIds.includes(u.id) && !u.fainted)
+        : getTargetsByRange(attacker, move.범위).filter(u => u.id !== attacker.id);
+      for (const l of applyUntargetEffects(attacker, _utTgtS, move, false)) mentLines.push(l);
     }
 
     // 랭크 변화
@@ -5849,6 +5870,25 @@ function _executeCore(attacker, move, mentPrefix) {
         advanceTurn(); return;
       }
     } else { G._magnetRiseMent = null; }
+  }
+  // ── [UNTARGET:self] 피격 불가 (자기 적용 — 대상 유무/변화기 여부 무관, 전자부유와 동일 방식) ──
+  {
+    const utSelf = moveEffects.find(e => e.type === 'untarget' && e.who === 'self');
+    if (utSelf && !attacker.fainted) {
+      const aN = attacker.runnerName||attacker.displayName||attacker.pokeName||'??';
+      attacker.untargetable = utSelf.turns;
+      rebuildCard(attacker);
+      log(`  🚫 ${aN} 피격 불가 ${utSelf.turns}턴`, 'effect');
+      const utMent = `${aN}${josa(aN,'은','는')} 피격 불가 상태가 되었다! (${utSelf.turns}턴 · 그동안 자신의 공격은 반감)`;
+      // 대상 없는 자기 변화기면 여기서 멘트 전송 후 종료 (턴 소실 방지)
+      if (!targets.length) {
+        const theme = G.config?.theme || 'light';
+        window.api.sendCalcData({ type:'result', theme, attacker: atkNameC, move: move.이름,
+          damage: 0, effText: '', ment: (G.pendingMent || `${aN}의 ${move.이름}!\n${utMent}`), detail: '', accResult: '', isSTAB: false });
+        G.pendingMent = null;
+        advanceTurn(); return;
+      }
+    }
   }
   if (!targets.length) { log('대상 없음 — 차례 넘김', 'highlight'); advanceTurn(); return; }
 
@@ -6537,6 +6577,7 @@ function _executeCore(attacker, move, mentPrefix) {
 
   // ── [LOCK] 문구용 상태 부여 (도발/금제/회복봉인/트집/사슬묶기/앙코르) ──
   const lockMents = applyMoveLocks(attacker, move, hitTargets, atkNameC, mentLines);
+  const untargetMents = applyUntargetEffects(attacker, hitTargets, move, false, 'target');   // [UNTARGET:target] 피격 불가 부여(적용) — 명중한 대상에만, 공격 이후
 
   // 전체 멘트 + 검토 데이터를 계산기 창으로 전송 (pendingMent 우선, 없으면 mentLines)
   let finalMent = G.pendingMent || mentLines.join('\n');
@@ -6560,6 +6601,7 @@ function _executeCore(attacker, move, mentPrefix) {
     finalMent = _fl.join('\n');
   }
   if (G._magnetRiseMent && !finalMent.includes(G._magnetRiseMent)) finalMent += '\n' + G._magnetRiseMent;   // 전자부유
+  for (const um of (untargetMents||[])) if (!finalMent.includes(um)) finalMent += '\n' + um;   // 피격 불가 부여
   finalMent = moveFaintToEnd(finalMent);   // 쓰러졌다! 멘트를 맨 끝으로
   G.pendingMent = null;  // 사용 후 초기화
 
@@ -7952,8 +7994,35 @@ function refreshTargetButtons() {
   });
 }
 
+// ── [UNTARGET:self|target] 피격 불가 상태 부여 ──────────────────
+// 상태를 부여(!preview)하고, 표시할 멘트 줄 배열을 반환한다.
+function applyUntargetEffects(attacker, targets, move, preview, whoFilter) {
+  const effs = (typeof getMoveNonDamageEffects !== 'undefined')
+    ? getMoveNonDamageEffects(move.부가효과 || '').filter(e => e.type === 'untarget' && (!whoFilter || e.who === whoFilter)) : [];
+  const lines = [];
+  if (!effs.length) return lines;
+  const nameOf = u => u.runnerName || u.displayName || u.pokeName || '??';
+  for (const e of effs) {
+    if (e.who === 'self') {
+      if (!attacker || attacker.fainted) continue;
+      const aN = nameOf(attacker);
+      if (!preview) { attacker.untargetable = e.turns; rebuildCard(attacker); log(`  🚫 ${aN} 피격 불가 ${e.turns}턴`, 'effect'); }
+      lines.push(`${aN}${josa(aN,'은','는')} 피격 불가 상태가 되었다! (${e.turns}턴 · 그동안 자신의 공격은 반감)`);
+    } else {
+      for (const d of (targets || [])) {
+        if (!d || d.fainted) continue;
+        const dN = nameOf(d);
+        if (!preview) { d.untargetable = e.turns; rebuildCard(d); log(`  🚫 ${dN} 피격 불가 ${e.turns}턴`, 'effect'); }
+        lines.push(`${dN}${josa(dN,'은','는')} 피격 불가 상태가 되었다! (${e.turns}턴 · 그동안 자신의 공격은 반감)`);
+      }
+    }
+  }
+  return lines;
+}
+
 function getTargetsByRange(attacker, range) {
-  const alive = G.units.filter(u => !u.fainted);
+  // 피격 불가(untargetable) 상태인 유닛은 대상에서 제외 (단, 시전자 자신의 자기 대상 기술은 허용)
+  const alive = G.units.filter(u => !u.fainted && !(u.untargetable > 0 && u.id !== attacker.id));
   const allies  = alive.filter(u => u.side === attacker.side && u.id !== attacker.id);
   const enemies = alive.filter(u => u.side !== attacker.side);
   const r = (range || '').trim();
@@ -8054,6 +8123,7 @@ function rerollDamageWithMove(attacker, move) {
 }
 function _rerollImpl(attacker, move) {
   G.__burnRun = undefined;   // 이전 미리보기 중단(예외) 시 잔류한 러닝 화상 플래그 정리
+  G.__untargetPenalty = !!(attacker && attacker.untargetable > 0);   // 피격 불가 상태로 공격 시 자신 대미지 반감
   const prefix = G._손가락흔들기Prefix || null;
   G._손가락흔들기Prefix = null;
   G._pendingOwner = `${attacker?.id}::${move?.이름}::${[...(G.targetIds||[])].sort().join(',')}`;   // 출처 = 공격자+기술+대상 (하나라도 바뀌면 재계산)
@@ -8220,6 +8290,8 @@ function _rerollImpl(attacker, move) {
         else previewLines.push(`${atkName}${josa(atkName,'은','는')} 자력의 힘으로 떠올랐다.`);
       }
     }
+    // [UNTARGET] 피격 불가 예고 (적용과 동일 문구)
+    for (const l of applyUntargetEffects(attacker, getTargetsByRange(attacker, move.범위), move, true)) previewLines.push(l);
 
     // 랭크 변화 예고
     const changes = getMoveStatChanges(move.이름, move.부가효과);
@@ -8969,6 +9041,9 @@ function _rerollImpl(attacker, move) {
   // 공격 시 발동 특성 [Ab,ONATTACK] 예측 (독수·악취 등)
   processOnAttackAbility(attacker, effectiveTargetsQ, move, mentLinesQ, true);
 
+  // [UNTARGET] 피격 불가 예고 (적용과 동일 문구 — 공격 이후 부여)
+  for (const l of applyUntargetEffects(attacker, effectiveTargetsQ, move, true)) if (!mentLinesQ.includes(l)) mentLinesQ.push(l);
+
   // 누적 드레인 회복 멘트 (광역 흡수기 합산)
   if (totalDrainQ > 0) {
     if (lastResult?.drainInvert) {
@@ -9565,6 +9640,13 @@ function processMagnetRise() {
     u.magnetRise -= 1;
     const name = u.runnerName||u.displayName||u.pokeName||'??';
     if (u.magnetRise <= 0) { u.magnetRise = 0; addTurnEndLog(`${name}의 전자부유가 풀렸다!`); }
+    rebuildCard(u);
+  });
+  // 피격 불가(UNTARGET) 턴 감소
+  G.units.filter(u => !u.fainted && u.untargetable > 0).forEach(u => {
+    u.untargetable -= 1;
+    const name = u.runnerName||u.displayName||u.pokeName||'??';
+    if (u.untargetable <= 0) { u.untargetable = 0; addTurnEndLog(`${name}의 피격 불가 상태가 풀렸다!`); }
     rebuildCard(u);
   });
 }
@@ -10411,6 +10493,10 @@ function cardHTML(u) {
       <span class="status-icon">🧲</span>
       <span class="status-name">전자부유 (${u.magnetRise}턴)</span>
     </div>` : ''}
+    ${u.untargetable > 0 ? `<div class="status-area status-untarget untarget-badge" data-uid="${u.id}" title="클릭하여 해제 (피격 불가 — 대상 지정 불가, 자신 공격 반감)" style="cursor:pointer;">
+      <span class="status-icon">🚫</span>
+      <span class="status-name">피격불가 (${u.untargetable}턴)</span>
+    </div>` : ''}
     ${(u.locks||[]).map((lk, li) => {
       const nm = lk.move ? `${lk.type}-${lk.move}` : lk.type;
       const tn = (lk.turns != null && lk.turns > 0) ? ` (${lk.turns}턴)` : '';
@@ -10650,6 +10736,12 @@ function setupCardEvents(el, unit) {
       G.targetsAutoFilled = false;   // 사용자가 직접 고른 선택
       log(`${unit.pokeName||'??'} 대상 해제`, 'highlight');
     } else {
+      const actor = getUnit(currentUnitId());
+      if (unit.untargetable > 0 && (!actor || actor.id !== unit.id)) {   // 피격 불가 유닛은 대상 지정 불가
+        log(`🚫 ${unit.pokeName||'??'}${josa(unit.pokeName||'??','은','는')} 피격 불가 상태라 대상으로 지정할 수 없다`, 'highlight');
+        refreshTargetButtons();
+        return;
+      }
       G.targetIds.push(unit.id);
       G.targetsAutoFilled = false;   // 사용자가 직접 고른 선택
       log(`🎯 ${unit.pokeName||'??'} 대상 지정`, 'effect');
@@ -10755,6 +10847,17 @@ function setupCardEvents(el, unit) {
       unit.magnetRise = 0;
       rebuildCard(unit);
       log(`  🔓 ${nN} 전자부유 해제 (수동)`, 'effect');
+    });
+  });
+  el.querySelectorAll('.untarget-badge').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const nN = unit.runnerName||unit.displayName||unit.pokeName||'??';
+      if (!confirm(`${nN}의 [피격 불가] 상태를 해제할까요?`)) return;
+      pushHistory();
+      unit.untargetable = 0;
+      rebuildCard(unit);
+      log(`  🔓 ${nN} 피격 불가 해제 (수동)`, 'effect');
     });
   });
   // regen 뱃지 좌클릭 해제 (확인)
@@ -13265,6 +13368,7 @@ function setupListeners() {
       u.binds = []; u.removedTypes = [];
       u.locks = [];              // 문구용 상태(사슬묶기/앙코르/도발/금제/회복봉인/트집)
       u.magnetRise = 0;          // 전자부유
+      u.untargetable = 0;        // 피격 불가
       u.charged = false;         // 충전
       u.grounded = false;
       u._koCharge = null; u._doomedBy = null;   // 지연 일격기 충전/파멸 표식 초기화
@@ -13562,6 +13666,10 @@ document.addEventListener('DOMContentLoaded', () => {
       var _burn = (typeof G !== 'undefined' && G) ? G.__burnRun : undefined;
       if (_burn !== undefined && _burn !== null && params && params.options) {
         params.options.burnStatus = !!_burn;
+      }
+      // 피격 불가(UNTARGET) 상태로 공격 시 자신의 대미지 반감
+      if (typeof G !== 'undefined' && G && G.__untargetPenalty === true && params && params.options) {
+        params.options.untargetPenalty = true;
       }
     } catch (e) {}
     return __ac_orig.apply(this, arguments);
