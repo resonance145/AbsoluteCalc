@@ -1339,12 +1339,14 @@ window.__acPanelHTML = {
       fieldOptions: ['없음', '그래스필드', '미스트필드', '사이코필드', '일렉트릭필드'],
       accEnabled: true,
       accTable: [
+        { diff: -5, acc: -50 },
         { diff: -4, acc: -30 },
         { diff: -3, acc: -20 },
         { diff: -2, acc: -10 },
         { diff: 2, acc: 10 },
         { diff: 3, acc: 20 },
-        { diff: 4, acc: 30 }
+        { diff: 4, acc: 30 },
+        { diff: 5, acc: 50 }
       ]
     };
   }
@@ -1360,6 +1362,11 @@ window.__acPanelHTML = {
         if (!saved.modifiers) saved.modifiers = defaults.modifiers;
         if (saved.accTable === undefined || (Array.isArray(saved.accTable) && saved.accTable.some(function (r) { return typeof r.acc === 'string'; }))) {
           saved.accTable = defaults.accTable;
+        }
+        if (Array.isArray(saved.accTable)) {   // 민첩차 ±5(±50) 구간 자동 보강
+          if (!saved.accTable.some(function(r){return r.diff >= 5;})) saved.accTable.push({ diff: 5, acc: 50 });
+          if (!saved.accTable.some(function(r){return r.diff <= -5;})) saved.accTable.push({ diff: -5, acc: -50 });
+          saved.accTable.sort(function(a,b){return a.diff-b.diff;});
         }
         if (saved.accEnabled === undefined) saved.accEnabled = true;
         saved.formula = '';
@@ -6025,9 +6032,15 @@ function _executeCore(attacker, move, mentPrefix) {
     return true;
   });
   const isSpread   = effectiveTargets.length > 1;
-  const spreadMult = effectiveTargets.length <= 1 ? 1
-    : effectiveTargets.length === 2 ? 0.75
-    : effectiveTargets.length === 3 ? 0.5 : 0.25;
+  // 광역 배율은 '실제 명중한 대상 수' 기준 (빗나간 대상 제외) — 미리보기 명중 판정 재사용
+  const _spreadHitCount = !isSpread ? effectiveTargets.length
+    : effectiveTargets.filter(d => {
+        const _p = G.pendingDamageResults?.find(x => x.defId === d.id && (x.moveId == null || x.moveId === move.이름));
+        return _p && _p.accRoll ? _p.accRoll.hit : true;
+      }).length;
+  const spreadMult = _spreadHitCount <= 1 ? 1
+    : _spreadHitCount === 2 ? 0.75
+    : _spreadHitCount === 3 ? 0.5 : 0.25;
 
   const atkName   = atkNameC;
   const mentLines = [mentPrefix || `${atkNameC}의 ${move.이름}!`];
@@ -8645,10 +8658,34 @@ function _rerollImpl(attacker, move) {
     }
     return true;
   });
+  // 각 피격자별 명중 판정 미리 결정 (Q→적용 시 재사용)
+  const accEnabledNow = document.getElementById('s-acc-on')?.checked ?? G.config?.accEnabled ?? true;
+  const gasNowQ = G.units.some(u => !u.fainted && /\[Ab,GASABSORB\]/i.test(u.abilityDesc||''));
+  const atkNMQ = (gasNowQ && !/\[Ab,ABILITYIMMUNE\]/i.test(attacker.abilityDesc||'') && !/\[Ab,GASABSORB\]/i.test(attacker.abilityDesc||'')) ? '' : (attacker.abilityDesc||'');
+  const perTargetAccRolls = effectiveTargetsQ.map(def => {
+    const moveAccQ = move.명중률 || 100;
+    if (!accEnabledNow) return { defId: def.id, hit: true, accStr: `${moveAccQ}%` };
+    // 노가드([Ab,PASSIVE:필중쌍방]): 공격자/피격자 어느 쪽이든 보유 시 필중 (적용 경로와 일치)
+    const defNMQ = (gasNowQ && !/\[Ab,ABILITYIMMUNE\]/i.test(def.abilityDesc||'') && !/\[Ab,GASABSORB\]/i.test(def.abilityDesc||'')) ? '' : (def.abilityDesc||'');
+    if (/\[Ab,PASSIVE:필중쌍방\]/i.test(atkNMQ) || /\[Ab,PASSIVE:필중쌍방\]/i.test(defNMQ)) {
+      return { defId: def.id, hit: true, accStr: `필중 (노가드)` };
+    }
+    if (/\[NOMISS\]/i.test(move.부가효과||'')) {
+      return { defId: def.id, hit: true, accStr: `필중기` };
+    }
+    // getAccuracyResult가 랭크/특성/중력/안개/민첩 전부 반영
+    const accQ = getAccuracyResult(attacker.민첩, def.민첩, moveAccQ, attacker.accRank||0, def.evaRank||0, attacker);
+    if (accQ.필중) return { defId: def.id, hit: true, accStr: `${accQ.baseAcc}% (명중 확정)` };
+    const finalAcc = accQ.baseAcc ?? moveAccQ;
+    const roll = accQ.roll ?? Math.floor(Math.random()*100)+1;
+    const hit = roll <= finalAcc;
+    return { defId: def.id, hit, accStr: `${finalAcc}% → 판정 ${roll} → ${hit ? '명중' : '빗나감'}` };
+  });
   const isSpreadQ = effectiveTargetsQ.length > 1;
-  const spreadMult = isSpreadQ
-    ? (effectiveTargetsQ.length === 2 ? 0.75 : effectiveTargetsQ.length === 3 ? 0.5 : 0.25)
-    : 1;
+  const _spreadHitCountQ = perTargetAccRolls.filter(a => a.hit).length;   // 실제 명중한 대상 수
+  const spreadMult = (!isSpreadQ || _spreadHitCountQ <= 1) ? 1
+    : _spreadHitCountQ === 2 ? 0.75
+    : _spreadHitCountQ === 3 ? 0.5 : 0.25;
 
   // [RSTEAL] 미리보기: 빼앗을 랭크를 임시로 반영해 대미지를 표시 (실제 상태는 적용 때 변경)
   const rstealTgtQ = /\[RSTEAL\]/i.test(move.부가효과 || '') ? targets[0] : null;
@@ -8697,29 +8734,6 @@ function _rerollImpl(attacker, move) {
     return { defId: def.id, moveId: move.이름, result: r };
   });
 
-  // 각 피격자별 명중 판정 미리 결정 (Q→적용 시 재사용)
-  const accEnabledNow = document.getElementById('s-acc-on')?.checked ?? G.config?.accEnabled ?? true;
-  const gasNowQ = G.units.some(u => !u.fainted && /\[Ab,GASABSORB\]/i.test(u.abilityDesc||''));
-  const atkNMQ = (gasNowQ && !/\[Ab,ABILITYIMMUNE\]/i.test(attacker.abilityDesc||'') && !/\[Ab,GASABSORB\]/i.test(attacker.abilityDesc||'')) ? '' : (attacker.abilityDesc||'');
-  const perTargetAccRolls = effectiveTargetsQ.map(def => {
-    const moveAccQ = move.명중률 || 100;
-    if (!accEnabledNow) return { defId: def.id, hit: true, accStr: `${moveAccQ}%` };
-    // 노가드([Ab,PASSIVE:필중쌍방]): 공격자/피격자 어느 쪽이든 보유 시 필중 (적용 경로와 일치)
-    const defNMQ = (gasNowQ && !/\[Ab,ABILITYIMMUNE\]/i.test(def.abilityDesc||'') && !/\[Ab,GASABSORB\]/i.test(def.abilityDesc||'')) ? '' : (def.abilityDesc||'');
-    if (/\[Ab,PASSIVE:필중쌍방\]/i.test(atkNMQ) || /\[Ab,PASSIVE:필중쌍방\]/i.test(defNMQ)) {
-      return { defId: def.id, hit: true, accStr: `필중 (노가드)` };
-    }
-    if (/\[NOMISS\]/i.test(move.부가효과||'')) {
-      return { defId: def.id, hit: true, accStr: `필중기` };
-    }
-    // getAccuracyResult가 랭크/특성/중력/안개/민첩 전부 반영
-    const accQ = getAccuracyResult(attacker.민첩, def.민첩, moveAccQ, attacker.accRank||0, def.evaRank||0, attacker);
-    if (accQ.필중) return { defId: def.id, hit: true, accStr: `${accQ.baseAcc}% (명중 확정)` };
-    const finalAcc = accQ.baseAcc ?? moveAccQ;
-    const roll = accQ.roll ?? Math.floor(Math.random()*100)+1;
-    const hit = roll <= finalAcc;
-    return { defId: def.id, hit, accStr: `${finalAcc}% → 판정 ${roll} → ${hit ? '명중' : '빗나감'}` };
-  });
   // pendingDamageResults에 acc 정보 병합
   G.pendingDamageResults?.forEach(p => {
     const ar = perTargetAccRolls.find(a => a.defId === p.defId);
