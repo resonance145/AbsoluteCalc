@@ -800,6 +800,11 @@ body.light .poke-card.fainted { background: #111 !important; }
 .poke-card.fainted .brand-area,
 .poke-card.fainted .target-btn,
 .poke-card.fainted .remove-btn { pointer-events: auto; }
+/* 기절 상태에서도 HP를 수동으로 되살릴 수 있게 HP 입력칸은 조작 가능 */
+.poke-card.fainted .hp-area,
+.poke-card.fainted .hp-text,
+.poke-card.fainted .hp-area .inline-num { pointer-events: auto; opacity: 1; }
+.poke-card.fainted .hp-area .inline-num { color: #ff3333 !important; }
 
 /* ── 타입 배경 기술 버튼 ── */
 .type-move-btn {
